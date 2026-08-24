@@ -1,7 +1,7 @@
 import streamlit as st
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from backend import init_db, get_user_stats, log_habit_completion, engine, Habit, SessionLocal, CompletionLog
+from backend import init_db, authenticate_user, get_user_stats, log_habit_completion, engine, Habit, SessionLocal, CompletionLog
 
 st.set_page_config(page_title="Ascend", page_icon="🔺", layout="wide")
 init_db()
@@ -19,19 +19,40 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- THE AUTHENTICATION WALL ---
+if "user_id" not in st.session_state:
+    st.markdown('<div class="massive-title">🔺 ASCEND</div>', unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Operative Authentication</h3>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        username_input = st.text_input("Enter your Call Sign (Username):").strip()
+        if st.button("Initialize Link", use_container_width=True):
+            if username_input:
+                # Logs them in, or creates their profile if they are new
+                st.session_state.user_id = authenticate_user(username_input)
+                st.session_state.username = username_input
+                st.rerun()
+            else:
+                st.error("Call Sign required.")
+    st.stop() # HALTS EXECUTION UNTIL LOGGED IN
+
+# --- TIMEZONE & LOGIC ---
 ist_time = datetime.now(ZoneInfo('Asia/Kolkata'))
 local_date = ist_time.date()
 current_hour = ist_time.hour
+ACTIVE_USER_ID = st.session_state.user_id
 
-db_stats = get_user_stats(user_id=1)
+db_stats = get_user_stats(user_id=ACTIVE_USER_ID)
 current_tier = db_stats['ascension_tier']
 tier_class = f"tier-{current_tier}"
 tier_icons = {"Iron": "⚙️", "Bronze": "🥉", "Silver": "🥈", "Gold": "🥇", "Onyx": "💎"}
 tier_icon = tier_icons.get(current_tier, "⚙️")
 
-# --- SIDEBAR (IDENTITY & INVENTORY) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown('<div class="massive-title">🔺 ASCEND</div>', unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: center; color: #00CC96; margin-bottom: 20px;'>Logged in as: <b>{st.session_state.username}</b></div>", unsafe_allow_html=True)
     st.markdown(f"""
         <div style="display: flex; align-items: center; justify-content: center; gap: 20px; margin-bottom: 25px;">
             <div style="font-size: 4.5rem; line-height: 1;">{tier_icon}</div>
@@ -45,20 +66,23 @@ with st.sidebar:
     progress_percent = db_stats['total_xp'] % 100
     st.progress(progress_percent, text=f"{progress_percent}/100 XP to next level")
     st.markdown(f"<div style='text-align: center; margin-top: 10px;'>🔥 **{db_stats['current_streak']} Day Streak**</div>", unsafe_allow_html=True)
-    
-    # Visual Freeze Inventory
     st.markdown(f"<div style='text-align: center; margin-top: 5px; color: #00CC96;'>❄️ **Freezes Available: {db_stats['streak_freezes']}**</div>", unsafe_allow_html=True)
     
+    if st.button("Log Out", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+        
     st.divider()
     current_view = st.radio("Navigation", ["Dashboard", "Habit Engine", "Profile"], label_visibility="hidden")
 
-# --- MAIN CONTENT ---
+# --- DASHBOARD ---
 if current_view == "Dashboard":
     st.title("Executive Dashboard")
     st.divider()
     
     db = SessionLocal()
-    habits = db.query(Habit).filter_by(is_active=True).all()
+    # ONLY FETCH HABITS BELONGING TO THIS USER
+    habits = db.query(Habit).filter_by(is_active=True, user_id=ACTIVE_USER_ID).all()
     logs_today = [log.habit_id for log in db.query(CompletionLog).filter_by(date_completed=local_date).all()]
     db.close()
     
@@ -72,32 +96,27 @@ if current_view == "Dashboard":
             for h in block_habits:
                 col1, col2 = st.columns([4, 1])
                 
-                # --- DEFENSIVE MOMENTUM LOGIC ---
-                # Fallback to local_date if database is corrupted and missing created_at
                 safe_created_at = h.created_at if h.created_at else local_date
                 habit_age = (local_date - safe_created_at).days + 1
-                
                 momentum_html = ""
                 if habit_age <= 45:
-                    if habit_age <= 14:
-                        boost_pct = 100
-                    else:
-                        boost_pct = int((1.0 - ((habit_age - 14) / 31.0)) * 100)
+                    if habit_age <= 14: boost_pct = 100
+                    else: boost_pct = int((1.0 - ((habit_age - 14) / 31.0)) * 100)
                     days_left = 45 - habit_age
                     momentum_html = f"<span class='momentum-badge'>⚡ Momentum: {days_left}d left (+{boost_pct}%)</span>"
 
                 col1.markdown(f"<h4 style='color: {h.color_hex}; display: inline-block; margin: 0;'>{h.icon} {h.name}</h4> {momentum_html}", unsafe_allow_html=True)
-                # --------------------------------
                 
                 if h.id in logs_today:
                     col2.button("Done", key=f"btn_done_{h.id}", disabled=True)
                 else:
                     if col2.button("Complete", key=f"btn_{h.id}"):
-                        xp_earned = log_habit_completion(h.id, user_id=1, local_date=local_date)
+                        xp_earned = log_habit_completion(h.id, user_id=ACTIVE_USER_ID, local_date=local_date)
                         if xp_earned:
                             st.toast(f"Target Acquired. +{xp_earned} XP")
                             st.rerun()
 
+# --- HABIT ENGINE ---
 elif current_view == "Habit Engine":
     st.header("Construct New Target")
     with st.form("new_habit"):
@@ -107,7 +126,6 @@ elif current_view == "Habit Engine":
         color = c2.color_picker("Aesthetic", "#636EFA")
         time_block = c3.selectbox("Time Block", ["Morning", "Midday", "Evening"])
         
-        # Decoupled Core Difficulty and Priority
         st.markdown("**Economic Parameters**")
         d1, d2 = st.columns(2)
         difficulty = d1.selectbox("Difficulty (Base XP)", ["Easy", "Medium", "Hard"], index=1)
@@ -117,23 +135,19 @@ elif current_view == "Habit Engine":
             if not name: st.error("Designation required.")
             else:
                 db = SessionLocal()
-                if db.query(Habit).filter(Habit.name.ilike(name)).first():
+                if db.query(Habit).filter(Habit.name.ilike(name), Habit.user_id == ACTIVE_USER_ID).first():
                     st.error("Duplicate Blueprint detected.")
                 else:
-                    db.add(Habit(name=name, icon=icon, color_hex=color, time_block=time_block, difficulty=difficulty, priority=priority))
+                    db.add(Habit(name=name, icon=icon, color_hex=color, time_block=time_block, difficulty=difficulty, priority=priority, user_id=ACTIVE_USER_ID))
                     db.commit()
-                    st.success("Target Locked. 45-Day Momentum Boost Activated.")
+                    st.success("Target Locked.")
                     st.rerun()
                 db.close()
                 
-    # --- CRUA COMPLETION: The Archive Engine ---
     st.divider()
     st.subheader("Manage Active Targets")
-    
     db = SessionLocal()
-    # Query ONLY active habits for the management list
-    active_habits = db.query(Habit).filter_by(is_active=True).all()
-    
+    active_habits = db.query(Habit).filter_by(is_active=True, user_id=ACTIVE_USER_ID).all()
     if not active_habits:
         st.caption("No blueprints deployed yet.")
     else:
@@ -141,17 +155,15 @@ elif current_view == "Habit Engine":
             c1, c2, c3 = st.columns([1, 3, 1])
             c1.markdown(f"**{h.time_block}**")
             c2.markdown(f"<span style='color: {h.color_hex};'>{h.icon} {h.name}</span>", unsafe_allow_html=True)
-            
-            # The Soft Delete Action
             if c3.button("Archive", key=f"del_{h.id}", type="primary"):
                 habit_to_archive = db.query(Habit).filter(Habit.id == h.id).first()
                 if habit_to_archive:
-                    habit_to_archive.is_active = False # Deactivates without destroying data
+                    habit_to_archive.is_active = False
                     db.commit()
-                    st.toast(f"Target '{h.name}' archived. Historical XP preserved.")
                     st.rerun()
     db.close()
 
+# --- PROFILE ---
 elif current_view == "Profile":
     st.header("Operative Profile")
     st.divider()
