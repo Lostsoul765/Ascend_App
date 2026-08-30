@@ -1,4 +1,21 @@
 import os
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String, Date, Boolean
+from sqlalchemy.orm import declarative_base, sessionmaker
+from datetime import date
+
+# Force Python to read the hidden .env file
+load_dotenv()
+
+# It will now pull the URL securely from memory
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+import os
 from sqlalchemy import create_engine, Column, Integer, String, Date, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import date
