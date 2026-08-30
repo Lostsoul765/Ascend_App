@@ -1,5 +1,0 @@
-streamlit
-sqlalchemy
-psycopg2-binary
-pandas
-python-dotenv
